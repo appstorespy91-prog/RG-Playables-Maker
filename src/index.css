@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-base-bg text-slate-200 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  ::selection {
+    @apply bg-accent/40 text-white;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-base-border rounded-full;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-base-panel border border-base-border rounded-2xl;
+  }
+  .btn-primary {
+    @apply bg-gradient-to-r from-accent to-violet-500 text-white font-semibold rounded-xl
+      shadow-glow transition-transform duration-150 hover:scale-[1.015] active:scale-[0.985]
+      disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none;
+  }
+  .btn-secondary {
+    @apply bg-base-panel2 border border-base-border text-slate-200 font-medium rounded-xl
+      transition-colors hover:bg-base-border/60 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .toggle-track {
+    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200;
+  }
+  .toggle-thumb {
+    @apply inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200;
+  }
+}
