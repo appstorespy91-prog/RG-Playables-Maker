@@ -48,21 +48,23 @@ import os
 import re
 import sys
 import time
-import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-REQUIRED_FILES = [
-    "index.html",
-    "Build/game.wasm",
-    "Build/game.data",
-    "Build/game.framework.js",
-    "Build/game.loader.js",
-]
+# Real Unity WebGL builds name their Build/ files after the project's
+# *Product Name* (e.g. "demo.wasm", "MyGame.loader.js") — never literally
+# "game.*". We locate each required asset by its distinguishing suffix
+# inside Build/ instead of a fixed filename.
+BUILD_FILE_SUFFIXES = {
+    "loader_js": ".loader.js",
+    "framework_js": ".framework.js",
+    "wasm": ".wasm",
+    "data": ".data",
+}
 
 NETWORK_LIMITS = {
     "mintegral": 2 * 1024 * 1024,
@@ -119,6 +121,12 @@ class WebGLBuild:
     data_b64: str = ""
     framework_js: str = ""
     loader_js: str = ""
+    # Actual on-disk basenames (e.g. "demo.wasm"), used to recognize and
+    # redirect requests the original page makes for these assets.
+    wasm_name: str = ""
+    data_name: str = ""
+    framework_name: str = ""
+    loader_name: str = ""
     wasm_original_size: int = 0
     data_original_size: int = 0
     total_original_size: int = 0
@@ -140,37 +148,65 @@ class OutputResult:
 # Step 1 — Read & validate
 # ---------------------------------------------------------------------------
 
+def _find_build_file(build_dir: str, suffix: str) -> Optional[str]:
+    """Return the single filename in build_dir ending with suffix, or None
+    if zero or more than one file matches (an ambiguous build is treated
+    as not found)."""
+    if not os.path.isdir(build_dir):
+        return None
+    matches = [
+        name
+        for name in os.listdir(build_dir)
+        if name.lower().endswith(suffix) and os.path.isfile(os.path.join(build_dir, name))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def validate_and_read(input_path: str) -> WebGLBuild:
     log("Reading WebGL files...", "info")
 
-    missing = []
-    sizes = {}
-    for rel in REQUIRED_FILES:
-        full = os.path.join(input_path, rel)
-        if not os.path.isfile(full):
-            missing.append(rel)
-        else:
-            sizes[rel] = os.path.getsize(full)
+    build_dir = os.path.join(input_path, "Build")
+    index_path = os.path.join(input_path, "index.html")
 
-    if missing:
-        for rel in missing:
-            log(f"Missing required file: {rel}", "error")
+    found_names: dict[str, Optional[str]] = {"index.html": "index.html" if os.path.isfile(index_path) else None}
+    for key, suffix in BUILD_FILE_SUFFIXES.items():
+        found_names[key] = _find_build_file(build_dir, suffix)
+
+    missing_labels = []
+    if not found_names["index.html"]:
+        missing_labels.append("index.html")
+    for key, suffix in BUILD_FILE_SUFFIXES.items():
+        if not found_names[key]:
+            missing_labels.append(f"Build/*{suffix}")
+
+    if missing_labels:
+        for label in missing_labels:
+            log(f"Missing required file: {label}", "error")
         raise RuntimeError(
-            "Missing required WebGL build files: " + ", ".join(missing)
+            "Missing required WebGL build files: " + ", ".join(missing_labels)
         )
 
-    for rel in REQUIRED_FILES:
-        log(f"Found {rel} ({human_size(sizes[rel])})", "ok")
+    sizes = {"index.html": os.path.getsize(index_path)}
+    for key in BUILD_FILE_SUFFIXES:
+        sizes[key] = os.path.getsize(os.path.join(build_dir, found_names[key]))
+
+    log(f"Found index.html ({human_size(sizes['index.html'])})", "ok")
+    for key, suffix in BUILD_FILE_SUFFIXES.items():
+        log(f"Found Build/{found_names[key]} ({human_size(sizes[key])})", "ok")
 
     build = WebGLBuild(root=input_path)
+    build.loader_name = found_names["loader_js"]
+    build.framework_name = found_names["framework_js"]
+    build.wasm_name = found_names["wasm"]
+    build.data_name = found_names["data"]
 
-    with open(os.path.join(input_path, "index.html"), "r", encoding="utf-8", errors="replace") as f:
+    with open(index_path, "r", encoding="utf-8", errors="replace") as f:
         build.index_html = f.read()
 
-    wasm_path = os.path.join(input_path, "Build/game.wasm")
-    data_path = os.path.join(input_path, "Build/game.data")
-    framework_path = os.path.join(input_path, "Build/game.framework.js")
-    loader_path = os.path.join(input_path, "Build/game.loader.js")
+    wasm_path = os.path.join(build_dir, build.wasm_name)
+    data_path = os.path.join(build_dir, build.data_name)
+    framework_path = os.path.join(build_dir, build.framework_name)
+    loader_path = os.path.join(build_dir, build.loader_name)
 
     build.wasm_original_size = os.path.getsize(wasm_path)
     build.data_original_size = os.path.getsize(data_path)
@@ -203,60 +239,122 @@ def validate_and_read(input_path: str) -> WebGLBuild:
 # ---------------------------------------------------------------------------
 
 def build_base_html(build: WebGLBuild) -> str:
+    """Turn the build into a single self-contained HTML document.
+
+    Real Unity WebGL templates (2020.1+) don't reference their Build/
+    files through static `<script src="...">` tags we can just delete —
+    the page's own inline script creates a `<script>` element at runtime
+    (`document.createElement("script"); script.src = loaderUrl`), and
+    loader.js in turn fetches the framework/data/wasm files internally via
+    `fetch()`/XHR using URLs it builds itself (e.g. `buildUrl + "/x.data"`).
+    None of those URLs appear as literal strings we could regex against.
+
+    So instead of rewriting loader.js/index.html's logic, we leave both
+    completely untouched and inject a small shim at the very top of
+    <head> that transparently redirects any script-element creation,
+    fetch(), or XMLHttpRequest for a known Build/ asset (matched by
+    filename) to an inlined base64 data: URI — before any other script
+    on the page runs. This works regardless of Unity template version or
+    how the loading code constructs its URLs.
+    """
     log("Inlining assets to base64...", "info")
 
     html = build.index_html
 
-    # Strip references to the external Build/*.js files that Unity's
-    # default index.html loads via <script src="Build/....loader.js">
-    html = re.sub(
-        r'<script[^>]*src=["\']Build/[^"\']*\.loader\.js["\'][^>]*>\s*</script>',
-        "",
-        html,
-        flags=re.IGNORECASE,
-    )
-    html = re.sub(
-        r'<script[^>]*src=["\']Build/[^"\']*\.framework\.js["\'][^>]*>\s*</script>',
-        "",
-        html,
-        flags=re.IGNORECASE,
-    )
-
     wasm_uri = f"data:application/wasm;base64,{build.wasm_b64}"
     data_uri = f"data:application/octet-stream;base64,{build.data_b64}"
+    loader_uri = "data:text/javascript;base64," + base64.b64encode(
+        build.loader_js.encode("utf-8")
+    ).decode("ascii")
+    framework_uri = "data:text/javascript;base64," + base64.b64encode(
+        build.framework_js.encode("utf-8")
+    ).decode("ascii")
 
-    # Unity's loader.js reads config.dataUrl / codeUrl / frameworkUrl and
-    # fetches them. We rewrite the loader source so those URLs resolve to
-    # our inlined data: URIs instead of relative file paths, and patch
-    # fetch/XHR-based loading to accept data: URIs directly.
-    patched_loader = build.loader_js
-    patched_loader = patched_loader.replace(
-        '"Build/game.wasm"', json.dumps(wasm_uri)
-    )
-    patched_loader = patched_loader.replace(
-        '"Build/game.data"', json.dumps(data_uri)
-    )
+    asset_map = {
+        build.loader_name: loader_uri,
+        build.framework_name: framework_uri,
+        build.wasm_name: wasm_uri,
+        build.data_name: data_uri,
+    }
 
-    injected = f"""
+    interceptor = f"""
 <script>
-// PlayableForge: inlined Unity data payload as base64 data URIs
-window.__PF_ASSETS__ = {{
-  wasmUrl: {json.dumps(wasm_uri)},
-  dataUrl: {json.dumps(data_uri)}
-}};
-</script>
-<script>
-{patched_loader}
-</script>
-<script>
-{build.framework_js}
+// PlayableForge: redirect all Unity Build/ asset requests to inlined
+// base64 data: URIs, so the page runs with zero external file references.
+// Installed before any other script so it catches every loading path
+// Unity's WebGL templates use (dynamic <script> injection, fetch, XHR).
+(function() {{
+  var PF_ASSETS = {json.dumps(asset_map)};
+  function pfBasename(url) {{
+    try {{
+      url = String(url).split('?')[0].split('#')[0];
+      var parts = url.split('/');
+      return parts[parts.length - 1];
+    }} catch (e) {{ return url; }}
+  }}
+  function pfResolve(url) {{
+    var name = pfBasename(url);
+    return Object.prototype.hasOwnProperty.call(PF_ASSETS, name) ? PF_ASSETS[name] : url;
+  }}
+
+  var pfCreateElement = document.createElement.bind(document);
+  document.createElement = function(tagName) {{
+    var el = pfCreateElement(tagName);
+    if (String(tagName).toLowerCase() === 'script') {{
+      var proto = Object.getPrototypeOf(el);
+      var desc = Object.getOwnPropertyDescriptor(proto, 'src');
+      if (desc && desc.set) {{
+        Object.defineProperty(el, 'src', {{
+          configurable: true,
+          enumerable: true,
+          get: function() {{ return desc.get.call(el); }},
+          set: function(url) {{ desc.set.call(el, pfResolve(url)); }}
+        }});
+      }}
+    }}
+    return el;
+  }};
+
+  if (window.fetch) {{
+    var pfFetch = window.fetch.bind(window);
+    window.fetch = function(input, init) {{
+      var url = (typeof input === 'string') ? input : (input && input.url);
+      if (url) {{
+        var mapped = pfResolve(url);
+        if (mapped !== url) {{
+          input = (typeof input === 'string') ? mapped : new Request(mapped, input);
+        }}
+      }}
+      return pfFetch(input, init);
+    }};
+  }}
+
+  var pfXhrOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {{
+    var args = Array.prototype.slice.call(arguments);
+    if (typeof url === 'string') args[1] = pfResolve(url);
+    return pfXhrOpen.apply(this, args);
+  }};
+}})();
 </script>
 """.strip()
 
-    if re.search(r"</body>", html, flags=re.IGNORECASE):
-        html = re.sub(r"</body>", injected + "\n</body>", html, count=1, flags=re.IGNORECASE)
+    if re.search(r"<head[^>]*>", html, flags=re.IGNORECASE):
+        html = re.sub(r"(<head[^>]*>)", r"\1\n" + interceptor, html, count=1, flags=re.IGNORECASE)
     else:
-        html += "\n" + injected
+        html = interceptor + "\n" + html
+
+    # Defensive fallback for older Unity templates that reference the
+    # loader via a literal static <script src="Build/xxx.loader.js"> tag
+    # written directly in the markup — those never go through
+    # document.createElement, so patch the src attribute textually too.
+    for name, uri in ((build.loader_name, loader_uri), (build.framework_name, framework_uri)):
+        html = re.sub(
+            r'(<script[^>]*\bsrc=["\'])([^"\']*' + re.escape(name) + r')(["\'])',
+            lambda m, _uri=uri: m.group(1) + _uri + m.group(3),
+            html,
+            flags=re.IGNORECASE,
+        )
 
     log("Assets inlined — HTML is now fully self-contained", "ok")
     return html
