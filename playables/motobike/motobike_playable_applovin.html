@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Moto Bike Stunt Wheelie Game</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none;}
+  #stage{position:fixed;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000;}
+  #game{background:#4A90D9;display:block;image-rendering:optimizeSpeed;}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="game" width="720" height="1280"></canvas></div>
+<script>
+/* =========================================================================
+   MOTO BIKE STUNT WHEELIE GAME - HTML5 PLAYABLE AD
+   Package: com.gt.moto.bike.wheelie.stunt.race.game
+   Network build: AppLovin MAX (MRAID 2.0)
+   Pure canvas + Web Audio API. Zero external dependencies.
+   ========================================================================= */
+(function(){
+"use strict";
+
+var STORE_URL = "https://play.google.com/store/apps/details?id=com.gt.moto.bike.wheelie.stunt.race.game";
+
+/* ---------------------------------------------------------------------
+   Canvas + responsive scaling
+--------------------------------------------------------------------- */
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+var LW = 720, LH = 1280; // logical resolution
+var scale = 1, offX = 0, offY = 0;
+
+function resize(){
+  var vw = window.innerWidth, vh = window.innerHeight;
+  scale = Math.min(vw / LW, vh / LH);
+  var cw = Math.round(LW * scale), ch = Math.round(LH * scale);
+  canvas.style.width = cw + 'px';
+  canvas.style.height = ch + 'px';
+  var rect = { w: cw, h: ch };
+  offX = (vw - cw) / 2; offY = (vh - ch) / 2;
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+resize();
+
+function toLogical(clientX, clientY){
+  var r = canvas.getBoundingClientRect();
+  var x = (clientX - r.left) / r.width * LW;
+  var y = (clientY - r.top) / r.height * LH;
+  return {x:x, y:y};
+}
+
+/* ---------------------------------------------------------------------
+   Audio Engine (Web Audio API, fully procedural, no files)
+--------------------------------------------------------------------- */
+var Audio = (function(){
+  var ctx0 = null, master = null, engineOsc = null, engineGain = null,
+      windSrc = null, windGain = null, musicTimer = null, unlocked = false,
+      noiseBuf = null;
+
+  function init(){
+    if(ctx0) return;
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      ctx0 = new AC();
+      master = ctx0.createGain();
+      master.gain.value = 0.55;
+      master.connect(ctx0.destination);
+      noiseBuf = makeNoiseBuffer(1.0);
+    }catch(e){ ctx0 = null; }
+  }
+
+  function makeNoiseBuffer(seconds){
+    var len = Math.floor(ctx0.sampleRate * seconds);
+    var buf = ctx0.createBuffer(1, len, ctx0.sampleRate);
+    var d = buf.getChannelData(0);
+    for(var i=0;i<len;i++){ d[i] = Math.random()*2-1; }
+    return buf;
+  }
+
+  function unlock(){
+    if(unlocked) return;
+    unlocked = true;
+    if(!ctx0) init();
+    if(ctx0 && ctx0.state === 'suspended') ctx0.resume();
+    startEngine();
+    startWind();
+    startMusic();
+  }
+
+  function startEngine(){
+    if(!ctx0 || engineOsc) return;
+    engineOsc = ctx0.createOscillator();
+    engineOsc.type = 'sawtooth';
+    engineGain = ctx0.createGain();
+    engineGain.gain.value = 0.05;
+    var lp = ctx0.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 800;
+    engineOsc.connect(lp); lp.connect(engineGain); engineGain.connect(master);
+    engineOsc.frequency.value = 60;
+    engineOsc.start();
+  }
+
+  function setEngineSpeed(t){ // t = 0..1
+    if(!engineOsc) return;
+    var f = 55 + t*140;
+    engineOsc.frequency.setTargetAtTime(f, ctx0.currentTime, 0.08);
+    engineGain.gain.setTargetAtTime(0.04 + t*0.06, ctx0.currentTime, 0.15);
+  }
+
+  function startWind(){
+    if(!ctx0 || windSrc) return;
+    windSrc = ctx0.createBufferSource();
+    windSrc.buffer = noiseBuf; windSrc.loop = true;
+    var hp = ctx0.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 1200;
+    windGain = ctx0.createGain();
+    windGain.gain.value = 0.0;
+    windSrc.connect(hp); hp.connect(windGain); windGain.connect(master);
+    windSrc.start();
+  }
+
+  function setWind(t){
+    if(!windGain) return;
+    windGain.gain.setTargetAtTime(Math.max(0,(t-0.35))*0.18, ctx0.currentTime, 0.2);
+  }
+
+  function screech(){
+    if(!ctx0) return;
+    var src = ctx0.createBufferSource();
+    src.buffer = noiseBuf;
+    var hp = ctx0.createBiquadFilter();
+    hp.type = 'bandpass'; hp.frequency.value = 2600; hp.Q.value = 4;
+    var g = ctx0.createGain();
+    g.gain.setValueAtTime(0.25, ctx0.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx0.currentTime + 0.35);
+    src.connect(hp); hp.connect(g); g.connect(master);
+    src.start(); src.stop(ctx0.currentTime + 0.4);
+  }
+
+  function crash(){
+    if(!ctx0) return;
+    var src = ctx0.createBufferSource();
+    src.buffer = noiseBuf;
+    var lp = ctx0.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1000;
+    var g = ctx0.createGain();
+    g.gain.setValueAtTime(0.6, ctx0.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx0.currentTime + 0.6);
+    src.connect(lp); lp.connect(g); g.connect(master);
+    src.start(); src.stop(ctx0.currentTime + 0.6);
+    var o = ctx0.createOscillator();
+    o.type = 'sine';
+    var og = ctx0.createGain();
+    o.frequency.setValueAtTime(150, ctx0.currentTime);
+    o.frequency.exponentialRampToValueAtTime(35, ctx0.currentTime + 0.5);
+    og.gain.setValueAtTime(0.5, ctx0.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.001, ctx0.currentTime + 0.5);
+    o.connect(og); og.connect(master);
+    o.start(); o.stop(ctx0.currentTime + 0.5);
+  }
+
+  function coin(){
+    if(!ctx0) return;
+    var o = ctx0.createOscillator();
+    var g = ctx0.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(880, ctx0.currentTime);
+    o.frequency.exponentialRampToValueAtTime(1760, ctx0.currentTime + 0.12);
+    g.gain.setValueAtTime(0.18, ctx0.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx0.currentTime + 0.18);
+    o.connect(g); g.connect(master);
+    o.start(); o.stop(ctx0.currentTime + 0.2);
+  }
+
+  function boostSound(){
+    if(!ctx0) return;
+    var o = ctx0.createOscillator();
+    var g = ctx0.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(200, ctx0.currentTime);
+    o.frequency.exponentialRampToValueAtTime(900, ctx0.currentTime + 0.3);
+    g.gain.setValueAtTime(0.2, ctx0.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx0.currentTime + 0.3);
+    o.connect(g); g.connect(master);
+    o.start(); o.stop(ctx0.currentTime + 0.32);
+  }
+
+  var MELODY = [523,659,784,659,880,784,659,523, 587,698,880,698,988,880,698,587];
+  var mi = 0;
+  function startMusic(){
+    if(!ctx0 || musicTimer) return;
+    var step = function(){
+      var note = MELODY[mi % MELODY.length]; mi++;
+      var o = ctx0.createOscillator(), g = ctx0.createGain();
+      o.type = 'triangle';
+      o.frequency.value = note;
+      g.gain.setValueAtTime(0.0001, ctx0.currentTime);
+      g.gain.linearRampToValueAtTime(0.06, ctx0.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx0.currentTime + 0.22);
+      o.connect(g); g.connect(master);
+      o.start(); o.stop(ctx0.currentTime + 0.25);
+    };
+    step();
+    musicTimer = setInterval(step, 220);
+  }
+  function stopMusic(){ if(musicTimer){ clearInterval(musicTimer); musicTimer=null; } }
+
+  return {
+    unlock: unlock,
+    setEngineSpeed: setEngineSpeed,
+    setWind: setWind,
+    screech: screech,
+    crash: crash,
+    coin: coin,
+    boost: boostSound,
+    stopMusic: stopMusic
+  };
+})();
+
+/* ---------------------------------------------------------------------
+   Game constants (per spec)
+--------------------------------------------------------------------- */
+var GRAVITY = 0.5;          // pulls front wheel down (deg/frame @60fps equivalent)
+var WHEELIE_FORCE = 0.8;    // raises front wheel
+var BALANCE_POINT = 45;     // degrees - center of perfect zone
+var SPEED_MIN = 3, SPEED_MAX = 8; // px/frame equivalent
+var GROUND_Y = 980;
+var GAME_DURATION_MS = 30000;
+
+/* ---------------------------------------------------------------------
+   Game state
+--------------------------------------------------------------------- */
+var STATE_LOADING='loading', STATE_INTRO='intro', STATE_PLAYING='playing',
+    STATE_CRASHED='crashed', STATE_ENDCARD='endcard';
+var state = STATE_LOADING;
+var stateT = 0;
+
+var input = { holding:false };
+var pointer = { x:0, y:0 };
+var buttons = []; // {x,y,w,h,cb} in logical coords, active per-frame
+
+var bike = {
+  x: 220, y: GROUND_Y,
+  speed: SPEED_MIN,
+  angle: 0,          // 0 = flat, up to 85 = near vertical
+  angularVel: 0,
+  falling: false,
+  fallAngle: 0,
+  wheelSpin: 0
+};
+
+var score = { distance:0, best:0, multiplier:1, fireStreak:0, coins:0, total:0 };
+var greenTimer = 0;
+var slamCooldown = 0;
+var runStartTime = 0;
+var elapsedPlayMs = 0;
+var attempts = 0;
+var MAX_ATTEMPTS = 2;
+
+var particles = []; // dust / sparks / speedlines
+var obstacles = [];
+var nextObstacleX = 900;
+var shake = 0;
+var slowMo = 1;
+var slowMoTimer = 0;
+
+var buildings = [];
+(function initBuildings(){
+  var x = -100;
+  while(x < LW + 400){
+    var w = 60 + Math.random()*90;
+    var h = 120 + Math.random()*260;
+    buildings.push({x:x, w:w, h:h, tone: 0.5 + Math.random()*0.3});
+    x += w + 10 + Math.random()*30;
+  }
+})();
+var buildingScroll = 0;
+var roadScroll = 0;
+
+/* ---------------------------------------------------------------------
+   Obstacle generation
+--------------------------------------------------------------------- */
+function difficultyForDistance(d){
+  if(d < 200) return { spawnGap:[420,600], types:['barrier','ramp'], speedCap:5.5 };
+  if(d < 500) return { spawnGap:[300,460], types:['barrier','ramp','boost'], speedCap:7 };
+  return { spawnGap:[210,340], types:['barrier','ramp','boost'], speedCap:8 };
+}
+
+function spawnObstacle(){
+  var diff = difficultyForDistance(score.distance);
+  var type = diff.types[Math.floor(Math.random()*diff.types.length)];
+  obstacles.push({
+    type:type, x: nextObstacleX, y: GROUND_Y, cleared:false, w: type==='barrier'?34:70
+  });
+  var gap = diff.spawnGap[0] + Math.random()*(diff.spawnGap[1]-diff.spawnGap[0]);
+  nextObstacleX += gap;
+}
+
+/* ---------------------------------------------------------------------
+   Particles
+--------------------------------------------------------------------- */
+function addDust(x,y){
+  for(var i=0;i<3;i++){
+    particles.push({
+      kind:'dust', x:x+(Math.random()*10-5), y:y,
+      vx:-bike.speed*0.6-Math.random()*1.5, vy:-Math.random()*2,
+      life:1, maxLife: 0.5+Math.random()*0.4, size: 4+Math.random()*6
+    });
+  }
+}
+function addSpark(x,y){
+  for(var i=0;i<4;i++){
+    particles.push({
+      kind:'spark', x:x, y:y,
+      vx:(Math.random()*2-1)*3, vy:(Math.random()*-3-1),
+      life:1, maxLife:0.35+Math.random()*0.25, size:2+Math.random()*3
+    });
+  }
+}
+function addCoinBurst(x,y){
+  for(var i=0;i<8;i++){
+    particles.push({
+      kind:'coin', x:x, y:y,
+      vx:(Math.random()*2-1)*4, vy:-4-Math.random()*3,
+      life:1, maxLife:0.6+Math.random()*0.3, size:6
+    });
+  }
+}
+function addSpeedLine(){
+  particles.push({
+    kind:'speedline', x: LW+10, y: 120+Math.random()*700,
+    vx: -14-Math.random()*10, vy:0, life:1, maxLife:0.4, size: 40+Math.random()*80
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Reset / start
+--------------------------------------------------------------------- */
+function resetRun(){
+  bike.x = 220; bike.speed = SPEED_MIN; bike.angle = 0; bike.angularVel = 0;
+  bike.falling = false; bike.fallAngle = 0;
+  score.distance = 0; score.multiplier = 1; score.fireStreak = 0; score.coins = 0; score.total = 0;
+  greenTimer = 0; slamCooldown = 0;
+  particles.length = 0; obstacles.length = 0; nextObstacleX = 900;
+  shake = 0; slowMo = 1; slowMoTimer = 0;
+  runStartTime = performance.now();
+  elapsedPlayMs = 0;
+}
+
+function startGame(){
+  resetRun();
+  state = STATE_PLAYING;
+  stateT = 0;
+  if(typeof window.gameReady === 'function'){ try{ window.gameReady(); }catch(e){} }
+}
+
+/* ---------------------------------------------------------------------
+   Input handling
+--------------------------------------------------------------------- */
+function handleDown(clientX, clientY){
+  Audio.unlock();
+  var p = toLogical(clientX, clientY);
+  pointer.x = p.x; pointer.y = p.y;
+  // check buttons first
+  for(var i=0;i<buttons.length;i++){
+    var b = buttons[i];
+    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){
+      b.cb();
+      return;
+    }
+  }
+  if(state === STATE_PLAYING){ input.holding = true; }
+  if(state === STATE_INTRO && stateT > 900){ startGame(); }
+}
+function handleUp(){
+  input.holding = false;
+}
+
+canvas.addEventListener('touchstart', function(e){ e.preventDefault(); var t=e.changedTouches[0]; handleDown(t.clientX,t.clientY); }, {passive:false});
+canvas.addEventListener('touchend', function(e){ e.preventDefault(); handleUp(); }, {passive:false});
+canvas.addEventListener('touchcancel', function(e){ e.preventDefault(); handleUp(); }, {passive:false});
+canvas.addEventListener('mousedown', function(e){ handleDown(e.clientX,e.clientY); });
+window.addEventListener('mouseup', function(){ handleUp(); });
+window.addEventListener('keydown', function(e){
+  if(e.code === 'Space'){ e.preventDefault(); Audio.unlock();
+    if(state===STATE_PLAYING) input.holding = true;
+    if(state===STATE_INTRO && stateT>900) startGame();
+  }
+});
+window.addEventListener('keyup', function(e){ if(e.code === 'Space'){ input.holding = false; } });
+
+/* ---------------------------------------------------------------------
+   Update
+--------------------------------------------------------------------- */
+var lastTime = 0;
+function update(dt){
+  // dt in ms, normalize to 60fps "frames"
+  var f = (dt/16.6667) * slowMo;
+  stateT += dt;
+
+  if(slowMoTimer > 0){ slowMoTimer -= dt; if(slowMoTimer<=0) slowMo = 1; }
+
+  if(state === STATE_INTRO){
+    if(stateT > 3000){ startGame(); }
+    return;
+  }
+
+  if(state === STATE_PLAYING){
+    elapsedPlayMs = performance.now() - runStartTime;
+    if(elapsedPlayMs > GAME_DURATION_MS){ showEndCard(); return; }
+
+    // speed ramps toward max over time & distance
+    var diff = difficultyForDistance(score.distance);
+    var targetSpeed = Math.min(diff.speedCap, SPEED_MIN + score.distance/120);
+    bike.speed += (targetSpeed - bike.speed) * 0.01 * f;
+    bike.speed = Math.max(SPEED_MIN*0.3, Math.min(SPEED_MAX, bike.speed));
+
+    // wheelie physics
+    if(input.holding && !bike.falling){
+      bike.angularVel += WHEELIE_FORCE * f * 0.6;
+    } else if(!bike.falling){
+      bike.angularVel -= GRAVITY * f * 0.6;
+    }
+    bike.angularVel *= 0.92;
+    var MAX_ANGULAR_VEL = 1.65; // caps how fast the wheelie can rise/fall per frame
+    if(bike.angularVel > MAX_ANGULAR_VEL) bike.angularVel = MAX_ANGULAR_VEL;
+    if(bike.angularVel < -MAX_ANGULAR_VEL) bike.angularVel = -MAX_ANGULAR_VEL;
+    var prevAngle = bike.angle;
+    bike.angle += bike.angularVel * f;
+    if(bike.angle < 0){ bike.angle = 0; bike.angularVel = 0; }
+    if(bike.angle > 88){ bike.angle = 88; bike.angularVel *= -0.2; }
+
+    // fast slam detection (wheel drops hard from a wheelie)
+    if(prevAngle - bike.angle > 2.4*f && prevAngle > 30 && slamCooldown<=0){
+      Audio.screech();
+      addDust(bike.x-10, GROUND_Y+18);
+      bike.speed *= 0.7;
+      score.multiplier = 1; score.fireStreak = 0; greenTimer = 0;
+      slamCooldown = 40;
+    }
+    if(slamCooldown>0) slamCooldown -= f;
+
+    // over-rotation = crash (fall backwards)
+    if(bike.angle >= 88){
+      crashBike('backflip');
+      return;
+    }
+
+    // balance zone scoring
+    if(bike.angle >= 38 && bike.angle <= 62){
+      greenTimer += dt;
+      if(greenTimer > 400){
+        score.multiplier = Math.min(8, 1 + Math.floor(greenTimer/700));
+      }
+      if(greenTimer > 1600){
+        score.fireStreak = Math.min(1, score.fireStreak+0.02*f);
+        if(Math.random()<0.5) addSpark(bike.x+70, GROUND_Y-40-bike.angle*2);
+      }
+    } else {
+      greenTimer = Math.max(0, greenTimer - dt*1.5);
+      if(greenTimer < 300){ score.multiplier = 1; score.fireStreak = 0; }
+    }
+
+    // dust while wheelie-ing (rear wheel)
+    if(bike.angle > 15 && Math.random() < 0.5){
+      addDust(bike.x - 46, GROUND_Y + 30);
+    }
+    if(bike.speed > 6 && Math.random()<0.4) addSpeedLine();
+
+    Audio.setEngineSpeed((bike.speed-SPEED_MIN)/(SPEED_MAX-SPEED_MIN));
+    Audio.setWind((bike.speed-SPEED_MIN)/(SPEED_MAX-SPEED_MIN));
+
+    // distance & score
+    var distGain = bike.speed * f * 0.05;
+    score.distance += distGain;
+    score.total += distGain * score.multiplier * (1+score.fireStreak);
+
+    bike.wheelSpin += bike.speed*f*0.15;
+
+    // scroll world
+    roadScroll += bike.speed * f;
+    buildingScroll += bike.speed * f * 0.35;
+
+    // obstacles
+    if(obstacles.length === 0 || obstacles[obstacles.length-1].x < nextObstacleX){
+      // handled by nextObstacleX gap already; spawn when within range
+    }
+    while(nextObstacleX - roadScroll < LW + 400){ spawnObstacle(); }
+
+    for(var i=obstacles.length-1;i>=0;i--){
+      var o = obstacles[i];
+      var sx = o.x - roadScroll; // screen x
+      if(!o.cleared && sx < bike.x + 20 && sx > bike.x - 40){
+        // collision window
+        if(o.type === 'barrier'){
+          if(bike.angle > 35){
+            o.cleared = true; score.total += 40; addCoinBurst(bike.x, GROUND_Y-60); Audio.coin(); score.coins++;
+          } else {
+            o.cleared = true;
+            crashBike('barrier');
+            return;
+          }
+        } else if(o.type === 'ramp'){
+          o.cleared = true;
+          if(bike.angle > 25){
+            score.total += 60; addCoinBurst(bike.x, GROUND_Y-60); Audio.coin(); score.coins++;
+          } else {
+            shake = Math.max(shake, 6); bike.speed *= 0.85;
+          }
+        } else if(o.type === 'boost'){
+          o.cleared = true;
+          bike.speed = Math.min(SPEED_MAX, bike.speed + 1.6);
+          Audio.boost(); score.total += 20;
+          slowMoTimer = 260; slowMo = 0.5;
+        }
+      }
+      if(sx < -100) obstacles.splice(i,1);
+    }
+
+    if(shake > 0) shake = Math.max(0, shake - f*0.6);
+  }
+
+  if(state === STATE_CRASHED){
+    bike.fallAngle += 6*f;
+    if(shake>0) shake = Math.max(0, shake - f*0.8);
+  }
+
+  // particles
+  for(var p=particles.length-1;p>=0;p--){
+    var pt = particles[p];
+    pt.x += pt.vx*f; pt.y += pt.vy*f;
+    if(pt.kind!=='speedline') pt.vy += 0.12*f;
+    pt.life -= dt/1000/pt.maxLife;
+    if(pt.life<=0) particles.splice(p,1);
+  }
+}
+
+function crashBike(reason){
+  state = STATE_CRASHED;
+  stateT = 0;
+  bike.falling = true;
+  shake = 22;
+  Audio.crash();
+  Audio.stopMusic();
+  score.best = Math.max(score.best, Math.floor(score.total));
+}
+
+function showEndCard(){
+  state = STATE_ENDCARD;
+  stateT = 0;
+  Audio.stopMusic();
+  score.best = Math.max(score.best, Math.floor(score.total));
+}
+
+/* ---------------------------------------------------------------------
+   Rendering helpers
+--------------------------------------------------------------------- */
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function drawSky(){
+  var g = ctx.createLinearGradient(0,0,0,GROUND_Y);
+  g.addColorStop(0,'#87CEEB');
+  g.addColorStop(1,'#4A90D9');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,LW,GROUND_Y);
+  // sun
+  ctx.fillStyle = 'rgba(255,255,240,0.9)';
+  ctx.beginPath(); ctx.arc(590,150,54,0,Math.PI*2); ctx.fill();
+  // clouds
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for(var i=0;i<4;i++){
+    var cx = ((i*260) - (buildingScroll*0.15) % 1000 + 1000) % (LW+300) - 150;
+    var cy = 90 + i%2*60;
+    cloud(cx,cy);
+  }
+}
+function cloud(x,y){
+  ctx.beginPath();
+  ctx.arc(x,y,26,0,Math.PI*2);
+  ctx.arc(x+28,y-10,32,0,Math.PI*2);
+  ctx.arc(x+58,y,24,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawBuildings(){
+  var baseY = GROUND_Y - 6;
+  for(var i=0;i<buildings.length;i++){
+    var b = buildings[i];
+    var sx = ((b.x - buildingScroll) % (LW+700) + (LW+700)) % (LW+700) - 350;
+    var t = b.tone;
+    ctx.fillStyle = 'rgba(' + Math.floor(40*t) + ',' + Math.floor(50*t) + ',' + Math.floor(70*t) + ',0.9)';
+    ctx.fillRect(sx, baseY-b.h, b.w, b.h);
+    ctx.fillStyle = 'rgba(255,230,150,0.35)';
+    for(var wx=6; wx<b.w-10; wx+=16){
+      for(var wy=10; wy<b.h-10; wy+=22){
+        if(Math.random()<0.002) continue;
+        ctx.fillRect(sx+wx, baseY-b.h+wy, 6,10);
+      }
+    }
+  }
+}
+
+function drawRoad(){
+  ctx.fillStyle = '#2b2b2f';
+  ctx.fillRect(0, GROUND_Y, LW, LH-GROUND_Y);
+  // road shading
+  var g = ctx.createLinearGradient(0,GROUND_Y,0,LH);
+  g.addColorStop(0,'rgba(0,0,0,0.25)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,GROUND_Y,LW,120);
+  // dashed yellow line
+  ctx.fillStyle = '#ffd23f';
+  var dashW = 46, gapW = 34, total = dashW+gapW;
+  var off = ((roadScroll) % total + total) % total;
+  for(var x = -off; x < LW; x += total){
+    ctx.fillRect(x, GROUND_Y+70, dashW, 8);
+  }
+  // curb
+  ctx.fillStyle = '#c9c9c9';
+  ctx.fillRect(0, GROUND_Y, LW, 6);
+}
+
+function drawObstacles(){
+  for(var i=0;i<obstacles.length;i++){
+    var o = obstacles[i];
+    var sx = o.x - roadScroll;
+    if(sx < -100 || sx > LW+100) continue;
+    if(o.type === 'barrier'){
+      ctx.fillStyle = '#e8482c';
+      ctx.fillRect(sx-4, GROUND_Y-46, 34, 46);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(sx-4, GROUND_Y-40, 34, 8);
+      ctx.fillRect(sx-4, GROUND_Y-20, 34, 8);
+    } else if(o.type === 'ramp'){
+      ctx.fillStyle = '#8a8f98';
+      ctx.beginPath();
+      ctx.moveTo(sx-40, GROUND_Y);
+      ctx.lineTo(sx+40, GROUND_Y);
+      ctx.lineTo(sx+40, GROUND_Y-56);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#c7cbd1';
+      ctx.fillRect(sx-40, GROUND_Y-4, 80, 4);
+    } else if(o.type === 'boost'){
+      var bob = Math.sin(stateT/120 + i)*6;
+      ctx.save();
+      ctx.translate(sx, GROUND_Y-50+bob);
+      ctx.fillStyle = '#38e07a';
+      rr(-22,-22,44,44,10); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(-6,-12); ctx.lineTo(8,-2); ctx.lineTo(0,-2); ctx.lineTo(6,12); ctx.lineTo(-8,2); ctx.lineTo(0,2);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawParticles(){
+  for(var i=0;i<particles.length;i++){
+    var p = particles[i];
+    var a = Math.max(0, p.life);
+    if(p.kind === 'dust'){
+      ctx.fillStyle = 'rgba(200,190,170,'+(a*0.6)+')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size*(1.4-a*0.5),0,Math.PI*2); ctx.fill();
+    } else if(p.kind === 'spark'){
+      ctx.fillStyle = 'rgba(255,'+(150+Math.floor(80*a))+',40,'+a+')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,Math.PI*2); ctx.fill();
+    } else if(p.kind === 'coin'){
+      ctx.fillStyle = 'rgba(255,210,60,'+a+')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size*a,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(180,130,20,'+a+')'; ctx.lineWidth=1.5; ctx.stroke();
+    } else if(p.kind === 'speedline'){
+      ctx.strokeStyle = 'rgba(255,255,255,'+(a*0.55)+')';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x - p.size,p.y); ctx.stroke();
+    }
+  }
+}
+
+function drawBike(){
+  var groundY = GROUND_Y;
+  var ang = bike.falling ? bike.fallAngle : bike.angle;
+  var rad = ang * Math.PI/180;
+  ctx.save();
+  ctx.translate(bike.x, groundY);
+  if(bike.falling){ ctx.rotate(-rad*0.5); ctx.translate(0, Math.min(120, bike.fallAngle*1.2)); }
+  else { ctx.rotate(-rad*0.55); }
+
+  // rear wheel (pivot)
+  drawWheel(-36, 0, 30, bike.wheelSpin);
+  // front wheel (lifts with angle)
+  var frontLift = bike.falling ? 0 : Math.sin(rad) * 70;
+  var frontFwd = Math.cos(rad) * 70;
+  drawWheel(-36+frontFwd, -frontLift, 30, bike.wheelSpin*1.1);
+
+  // body/frame
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 8; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(-36,-8);
+  ctx.lineTo(-4,-46);
+  ctx.lineTo(-36+frontFwd*0.9, -frontLift*0.9-10);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ff7a1a';
+  rr(-30,-58,44,26,8); ctx.fill();
+  ctx.fillStyle = '#111';
+  rr(-30,-40,44,10,4); ctx.fill();
+
+  // exhaust
+  ctx.fillStyle = '#888';
+  ctx.fillRect(-46,-14,20,8);
+
+  // rider
+  ctx.save();
+  ctx.translate(-14,-52);
+  // torso
+  ctx.fillStyle = '#1e3a8a';
+  rr(-10,-46,24,44,6); ctx.fill();
+  // arms
+  ctx.strokeStyle = '#1e3a8a'; ctx.lineWidth=9; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-6,-40); ctx.lineTo(-30+frontFwd*0.55, -frontLift*0.55-4); ctx.stroke();
+  // legs
+  ctx.strokeStyle = '#111'; ctx.lineWidth=10;
+  ctx.beginPath(); ctx.moveTo(6,-4); ctx.lineTo(-6,20); ctx.stroke();
+  // helmet
+  ctx.fillStyle = '#e8482c';
+  ctx.beginPath(); ctx.arc(2,-58,15,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(20,20,30,0.85)';
+  ctx.beginPath(); ctx.arc(6,-58,9,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawWheel(x,y,r,spin){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.arc(0,0,r*0.42,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#ccc'; ctx.lineWidth = 2;
+  ctx.rotate(spin);
+  for(var i=0;i<5;i++){
+    ctx.rotate(Math.PI*2/5);
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-r*0.42); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* wheelie meter UI */
+function drawMeter(){
+  var mx = LW/2, my = 96, w = 420, h = 26;
+  ctx.save();
+  ctx.translate(mx-w/2, my-h/2);
+  // background
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  rr(-8,-30,w+16,h+50,14); ctx.fill();
+  // zones: 0-88 deg mapped across width
+  var zones = [
+    {from:0, to:20, color:'#e14b3a'},
+    {from:20, to:38, color:'#f4c73b'},
+    {from:38, to:62, color:'#3ecb6a'},
+    {from:62, to:75, color:'#f4c73b'},
+    {from:75, to:88, color:'#e14b3a'}
+  ];
+  for(var i=0;i<zones.length;i++){
+    var z = zones[i];
+    var x0 = w*(z.from/88), x1 = w*(z.to/88);
+    ctx.fillStyle = z.color;
+    ctx.fillRect(x0,0,x1-x0,h);
+  }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth=3; ctx.strokeRect(0,0,w,h);
+  // indicator
+  var ang = bike.falling ? bike.fallAngle : bike.angle;
+  var ix = w * (Math.min(88,ang)/88);
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(ix-10,-14); ctx.lineTo(ix+10,-14); ctx.lineTo(ix,4);
+  ctx.closePath(); ctx.fill();
+  // label
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('WHEELIE BALANCE', w/2, h+22);
+  ctx.restore();
+}
+
+function drawHUD(){
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  rr(16,16,220,54,12); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('SCORE ' + Math.floor(score.total), 30, 50);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  rr(LW-176,16,160,54,12); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.textAlign='right';
+  ctx.fillText('x' + score.multiplier, LW-30, 50);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  rr(16,LH-70,220,44,10); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif'; ctx.textAlign='left';
+  ctx.fillText(Math.floor(score.distance) + 'm', 30, LH-42);
+
+  if(score.fireStreak > 0.05){
+    ctx.save();
+    ctx.globalAlpha = Math.min(1,score.fireStreak);
+    ctx.fillStyle = '#ff7a1a'; ctx.font='bold 22px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('🔥 FIRE STREAK 🔥', LW/2, 200);
+    ctx.restore();
+  }
+
+  var remain = Math.max(0, GAME_DURATION_MS - elapsedPlayMs);
+  ctx.fillStyle='rgba(255,255,255,0.85)'; ctx.font='16px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(Math.ceil(remain/1000)+'s', LW/2, 34);
+}
+
+/* buttons drawing helper */
+function drawButton(x,y,w,h,label,bg,fg){
+  rr(x,y,w,h,14); ctx.fillStyle = bg; ctx.fill();
+  ctx.fillStyle = fg||'#fff'; ctx.font = 'bold 28px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label, x+w/2, y+h/2+2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+/* opening sequence */
+var handT = 0;
+function drawIntro(){
+  ctx.fillStyle = 'rgba(10,14,26,0.55)';
+  ctx.fillRect(0,0,LW,LH);
+
+  ctx.textAlign='center';
+  ctx.fillStyle = '#ff7a1a';
+  ctx.font = 'bold 64px sans-serif';
+  ctx.save();
+  var bounce = Math.sin(stateT/220)*6;
+  ctx.translate(LW/2, 340+bounce);
+  ctx.fillText('MOTO WHEELIE', 0, 0);
+  ctx.font = 'bold 40px sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('STUNT RACE', 0, 48);
+  ctx.restore();
+
+  if(stateT > 500){
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 34px sans-serif';
+    var pulse = 0.75+0.25*Math.sin(stateT/180);
+    ctx.save(); ctx.globalAlpha = pulse;
+    ctx.fillText('HOLD to Wheelie!', LW/2, 620);
+    ctx.restore();
+  }
+
+  if(stateT > 900){
+    // animated hand + tap circle
+    handT += 1;
+    var cycle = (stateT/1000) % 1.4;
+    var hx = LW/2 + 90, hy = 800;
+    var press = cycle < 0.7;
+    var s = press ? 0.85 : 1;
+    ctx.save();
+    ctx.translate(hx,hy); ctx.scale(s,s);
+    ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.arc(0,0,46,0,Math.PI*2); ctx.stroke();
+    // hand (simple mitten shape)
+    ctx.fillStyle = '#f2c199';
+    rr(-24,-10,48,54,16); ctx.fill();
+    ctx.fillStyle = '#f2c199';
+    ctx.beginPath(); ctx.arc(0,-14,20,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle='#fff'; ctx.font='22px sans-serif';
+    ctx.fillText('Tap anywhere to start', LW/2, 900);
+  }
+}
+
+/* end panels */
+function rank(score){
+  if(score >= 900) return 'LEGEND';
+  if(score >= 500) return 'PRO RIDER';
+  if(score >= 200) return 'RISING STAR';
+  return 'ROOKIE';
+}
+
+function drawCrashPanel(){
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,LW,LH);
+  var px = LW/2-260, py = 420, pw=520, ph=440;
+  ctx.fillStyle = 'rgba(24,26,38,0.96)';
+  rr(px,py,pw,ph,24); ctx.fill();
+  ctx.strokeStyle='#ff7a1a'; ctx.lineWidth=4; rr(px,py,pw,ph,24); ctx.stroke();
+
+  ctx.textAlign='center'; ctx.fillStyle='#fff';
+  ctx.font='bold 40px sans-serif';
+  ctx.fillText('WIPEOUT!', LW/2, py+70);
+  ctx.font='24px sans-serif';
+  ctx.fillText('Score: ' + Math.floor(score.total), LW/2, py+120);
+  ctx.fillStyle='#ffd23f'; ctx.font='bold 26px sans-serif';
+  ctx.fillText(rank(score.total), LW/2, py+160);
+
+  buttons = [];
+  if(attempts < MAX_ATTEMPTS){
+    drawButton(px+40, py+220, pw-80, 76, 'TRY AGAIN', '#2e7d32');
+    buttons.push({x:px+40,y:py+220,w:pw-80,h:76, cb:function(){ attempts++; startGame(); }});
+    drawButton(px+40, py+312, pw-80, 76, 'DOWNLOAD FREE', '#ff7a1a');
+    buttons.push({x:px+40,y:py+312,w:pw-80,h:76, cb: doInstall});
+  } else {
+    drawButton(px+40, py+250, pw-80, 90, 'DOWNLOAD FREE', '#ff7a1a');
+    buttons.push({x:px+40,y:py+250,w:pw-80,h:90, cb: doInstall});
+  }
+}
+
+function drawEndCard(){
+  ctx.fillStyle = 'rgba(4,6,14,0.86)';
+  ctx.fillRect(0,0,LW,LH);
+
+  // app icon
+  var iw = 180, ix = LW/2-iw/2, iy = 260;
+  rr(ix,iy,iw,iw,38);
+  var g = ctx.createLinearGradient(ix,iy,ix,iy+iw);
+  g.addColorStop(0,'#ff9a3c'); g.addColorStop(1,'#e8482c');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.save();
+  ctx.translate(ix+iw/2, iy+iw/2);
+  drawWheel(-24,20,30,stateT/120);
+  drawWheel(24,20,30,stateT/120);
+  ctx.strokeStyle='#111'; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.moveTo(-24,20); ctx.lineTo(0,-24); ctx.lineTo(24,20); ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign='center'; ctx.fillStyle='#fff';
+  ctx.font='bold 34px sans-serif';
+  ctx.fillText('Moto Bike Stunt Wheelie', LW/2, iy+iw+56);
+
+  // stars
+  var stars = 4.6;
+  ctx.font='26px sans-serif'; ctx.fillStyle='#ffd23f';
+  var starStr = '';
+  for(var i=0;i<5;i++) starStr += (i < Math.round(stars)) ? '★' : '☆';
+  ctx.fillText(starStr + '  4.6', LW/2, iy+iw+96);
+
+  ctx.font='22px sans-serif'; ctx.fillStyle='#cfd6e6';
+  ctx.fillText('Your Score: ' + Math.floor(score.total) + '  •  ' + rank(score.total), LW/2, iy+iw+140);
+
+  buttons = [];
+  var bx = LW/2-260, by = iy+iw+190, bw=520, bh=96;
+  // pulse
+  var pulse = 1+0.03*Math.sin(stateT/160);
+  ctx.save();
+  ctx.translate(bx+bw/2, by+bh/2); ctx.scale(pulse,pulse); ctx.translate(-(bx+bw/2), -(by+bh/2));
+  drawButton(bx,by,bw,bh,'PLAY FULL GAME','#ff7a1a');
+  ctx.restore();
+  buttons.push({x:bx,y:by,w:bw,h:bh, cb: doInstall});
+
+  ctx.font='20px sans-serif'; ctx.fillStyle='#9aa4b8';
+  ctx.fillText('Download FREE on Play Store', LW/2, by+bh+42);
+}
+
+function doInstall(){
+  if(typeof window.installGame === 'function'){ try{ window.installGame(); }catch(e){} }
+  if(state !== STATE_ENDCARD){ showEndCard(); }
+}
+
+/* ---------------------------------------------------------------------
+   Main render
+--------------------------------------------------------------------- */
+function render(){
+  ctx.save();
+  if(shake > 0){
+    ctx.translate((Math.random()*2-1)*shake, (Math.random()*2-1)*shake);
+  }
+  drawSky();
+  drawBuildings();
+  drawRoad();
+  drawObstacles();
+  drawBike();
+  drawParticles();
+  ctx.restore();
+
+  if(state === STATE_PLAYING || state === STATE_CRASHED){
+    drawMeter();
+    drawHUD();
+  }
+  if(state === STATE_INTRO) drawIntro();
+  if(state === STATE_CRASHED && stateT > 500) drawCrashPanel();
+  if(state === STATE_ENDCARD) drawEndCard();
+
+  if(state === STATE_LOADING){
+    ctx.fillStyle = '#0b1220'; ctx.fillRect(0,0,LW,LH);
+    ctx.fillStyle = '#fff'; ctx.font='bold 32px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Loading...', LW/2, LH/2);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Loop
+--------------------------------------------------------------------- */
+function loop(ts){
+  if(!lastTime) lastTime = ts;
+  var dt = Math.min(48, ts - lastTime);
+  lastTime = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* boot */
+buttons = [];
+state = STATE_INTRO;
+stateT = 0;
+requestAnimationFrame(loop);
+
+/* Auto-start safety net: begin gameplay automatically ~1s in even
+   if the player hasn't interacted yet (intro sequence itself runs
+   for ~3s total before auto-transitioning to gameplay). */
+setTimeout(function(){ if(state === STATE_INTRO && stateT < 200){ /* no-op, handled by update() */ } }, 1000);
+
+})();
+</script>
+<script>
+/* AppLovin MAX - MRAID 2.0 integration */
+(function(){
+  function onMraidReady(){
+    if (typeof window.gameReady === 'function') { window.gameReady(); }
+  }
+  window.gameReady = function() {
+    // Notify MRAID the creative finished loading / is ready to display.
+    // (MRAID auto-fires 'ready'; this hook exists for parity with other networks.)
+  };
+  window.installGame = function() {
+    try {
+      if (window.mraid && typeof window.mraid.open === 'function') {
+        window.mraid.open('https://play.google.com/store/apps/details?id=com.gt.moto.bike.wheelie.stunt.race.game');
+        return;
+      }
+    } catch(e){}
+    try { window.open('https://play.google.com/store/apps/details?id=com.gt.moto.bike.wheelie.stunt.race.game', '_blank'); } catch(e){}
+  };
+  function wireMraid(){
+    if (window.mraid) {
+      try {
+        window.mraid.addEventListener('stateChange', function(state){
+          if (state === 'expanded' || state === 'default') { /* no-op */ }
+        });
+      } catch(e){}
+      if (typeof window.mraid.getState === 'function' && window.mraid.getState() === 'loading') {
+        window.mraid.addEventListener('ready', onMraidReady);
+      } else {
+        onMraidReady();
+      }
+    } else {
+      onMraidReady();
+    }
+  }
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    wireMraid();
+  } else {
+    document.addEventListener('DOMContentLoaded', wireMraid);
+  }
+})();
+</script>
+</body>
+</html>
